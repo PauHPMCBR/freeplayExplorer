@@ -1,31 +1,32 @@
-import java.io.FileWriter;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.FileReader;
+import java.lang.reflect.Type;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import org.json.*;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 class FreeplayExplorer {
     static int SEED = 12;
     static int START = 300;
     static int END = 310;
 
-    public static void main(String[] args) {
-        BloonCalculator bloonCalculator = new BloonCalculator();
-        List<JSONObject> freeplayGroups = new ArrayList<>();
-        try {
-            String text = Files.readString(Path.of("cleanedFreeplayGroups.json"));
-            JSONArray tempGroup = new JSONArray(text);
-            for (int i = 0; i < tempGroup.length(); i++) {
-                freeplayGroups.add(tempGroup.getJSONObject(i));
-            }
+    public static List<FreeplayGroup> parseFreeplayGroup(String filePath) {
+        Gson gson = new Gson();
+        Type freeplayGroupListType = new TypeToken<List<FreeplayGroup>>() {}.getType();
 
+        try (FileReader reader = new FileReader(filePath)) {
+            return gson.fromJson(reader, freeplayGroupListType);
         } catch (Exception e) {
-            System.out.printf("failed to read json file with exception %s", e);
-            return;
+            System.out.println(e);
+            return new ArrayList<>();
         }
+    }
+
+    public static void main(String[] args) {
+        List<FreeplayGroup> freeplayGroups = parseFreeplayGroup("cleanedFreeplayGroups.json");
+
         int ROUND = START;
         long totalRBE = 0;
         double totalCash = 0;
@@ -52,11 +53,10 @@ class FreeplayExplorer {
             System.out.println("|            Bloon |           Count |          Length |");
             System.out.println("+------------------+-----------------+-----------------+");
             for (int index : testGroups) {
-                JSONObject object = freeplayGroups.get(index);
+                FreeplayGroup freeplayGroup = freeplayGroups.get(index);
                 boolean inBounds = false;
-                JSONArray bounds = object.getJSONArray("bounds");
-                for (int i = 0; i < bounds.length(); i++) {
-                    if ((bounds.getJSONObject(i).getInt("lowerBounds") <= ROUND) && (ROUND <= bounds.getJSONObject(i).getInt("upperBounds"))) {
+                for (FreeplayGroup.Bounds bounds : freeplayGroup.bounds) {
+                    if (bounds.lowerBounds <= ROUND && ROUND <= bounds.upperBounds) {
                         inBounds = true;
                         break;
                     }
@@ -64,14 +64,15 @@ class FreeplayExplorer {
                 if (!inBounds) {
                     continue;
                 }
-                float score = object.getFloat("score") == 0 ? calculateScore(object, bloonCalculator) : object.getFloat("score");
+                if (freeplayGroup.score == 0) freeplayGroup.score = calculateScore(freeplayGroup);
+                float score = (float)freeplayGroup.score;
                 if (score > budget) continue;
-                String bloon = object.getJSONObject("group").getString("bloon");
-                int count = object.getJSONObject("group").getInt("count");
-                roundRBE += (long) bloonCalculator.getRBE(bloon, ROUND) * count;
-                roundCash += bloonCalculator.getCash(bloon, ROUND) * count;
-                roundTime += object.getJSONObject("group").getInt("end");
-                System.out.println(formatEmissions(object));
+                String bloon = freeplayGroup.group.bloon;
+                int count = freeplayGroup.group.count;
+                roundRBE += (long) BloonCalculator.getRBE(bloon, ROUND) * count;
+                roundCash += BloonCalculator.getCash(bloon, ROUND) * count;
+                roundTime += (int) freeplayGroup.group.end;
+                System.out.println(formatEmissions(freeplayGroup));
                 budget -= score;
             }
             System.out.println("+------------------------------------------------------+");
@@ -93,12 +94,11 @@ class FreeplayExplorer {
         System.out.println("+------------------------------------------------------+");
     }
 
-    public static String formatEmissions(JSONObject emission) {
-        JSONObject group = emission.getJSONObject("group");
+    public static String formatEmissions(FreeplayGroup freeplayGroup) {
         return String.format("| %16s |%16s |%16s |",
-                group.getString("bloon"),
-                group.getInt("count"),
-                group.getInt("end")
+                freeplayGroup.group.bloon,
+                freeplayGroup.group.count,
+                freeplayGroup.group.end
         );
     }
 
@@ -131,9 +131,9 @@ class FreeplayExplorer {
         return (float) ((1 + round * 0.01) * (round * -3 + 400) * ((budget * 5e-11 + helper + 20) / 160) * 0.6);
     }
 
-    public static float calculateScore(JSONObject bloonModel, BloonCalculator calc) {
-        String bloon = bloonModel.getJSONObject("group").getString("bloon");
-        int count = bloonModel.getJSONObject("group").getInt("count");
+    public static double calculateScore(FreeplayGroup freeplayGroup) {
+        String bloon = freeplayGroup.group.bloon;
+        int count = freeplayGroup.group.count;
         double multiplier = 1;
         if (bloon.contains("Camo")) {
             multiplier += 0.1;
@@ -143,74 +143,14 @@ class FreeplayExplorer {
             multiplier += 0.1;
             bloon = bloon.replace("Regrow", "");
         }
-        int bloonRBE = calc.getRBE(bloon);
+        int bloonRBE = BloonCalculator.getRBE(bloon);
         if (count == 1) return (float) (bloonRBE * multiplier);
-        double spacing = ((double) bloonModel.getJSONObject("group").getInt("end")) / (60 * count);
+        double spacing = freeplayGroup.group.end / (60 * count);
         double totalRBE = count * bloonRBE * multiplier;
         if (spacing >= 1) return (float) (totalRBE * 0.8);
         if (spacing >= 0.5) return (float) (totalRBE);
         if (spacing > 0.1) return (float) (totalRBE * 1.1);
         if (spacing > 0.08) return (float) (totalRBE * 1.4);
-        return (float) (totalRBE * 1.8);
-    }
-
-    /*
-    removes the useless fields from the freeplayGroups json
-     */
-    public static void CleanJSON() {
-        List<JSONObject> freeplayGroups = new ArrayList<>();
-        try {
-            String text = Files.readString(Path.of("freeplayGroups.json"));
-            JSONArray tempGroup = new JSONArray(text);
-            for (int i = 0; i < tempGroup.length(); i++) {
-                freeplayGroups.add(tempGroup.getJSONObject(i));
-            }
-
-        } catch (Exception e) {
-            System.out.printf("failed to read json file with exception %s", e);
-            return;
-        }
-        JSONArray cleanedJSON = new JSONArray();
-        BloonCalculator calc = new BloonCalculator();
-        for (JSONObject freeplayGroup : freeplayGroups) {
-            /*
-            there are some emissions which [group][end] =/= lastEmission.time
-            the game respects lastEmission.time so correct it
-            example: element 188 in the freeplayGroups.json
-            this seems to only happen with single spawn emissions
-             */
-            JSONArray bloonEmissions = freeplayGroup.getJSONArray("bloonEmissions");
-            JSONObject lastEmission = bloonEmissions.getJSONObject(bloonEmissions.length() - 1);
-            freeplayGroup.getJSONObject("group").put("end", lastEmission.getInt("time"));
-
-
-            freeplayGroup.remove("bloonEmissions_"); //its all null
-            freeplayGroup.remove("bloonEmissions"); // takes a lot of space with a lot of duplicate information
-            // lists out each emission seperately even though they are all the same bloon and evenly spaced
-            freeplayGroup.remove("checkedImplementationType"); //all null
-            freeplayGroup.remove("ImplementationType"); //why is this one capitalized
-            freeplayGroup.remove("implementationType"); //why is this one capitalized
-            freeplayGroup.remove("childDependants"); //all null
-            freeplayGroup.remove("_name"); // copy of "name"
-            freeplayGroup.remove("WasCollected"); // something something but its always false
-            freeplayGroup.getJSONObject("group").remove("start"); // always 0
-            freeplayGroup.getJSONObject("group").remove("_name"); // copy of "name"
-            freeplayGroup.getJSONObject("group").remove("ImplementationType");
-            freeplayGroup.getJSONObject("group").remove("implementationType");
-            freeplayGroup.getJSONObject("group").remove("childDependants");
-            freeplayGroup.getJSONObject("group").remove("checkedImplementationType");
-            freeplayGroup.getJSONObject("group").remove("WasCollected");
-            if (freeplayGroup.getInt("score") == 0) {
-                freeplayGroup.put("score", calculateScore(freeplayGroup, calc));
-            }
-            cleanedJSON.put(freeplayGroup);
-        }
-        try {
-            FileWriter writer = new FileWriter("cleanedFreeplayGroups.json");
-            writer.write(cleanedJSON.toString());
-            writer.close();
-        } catch (Exception e) {
-            System.out.printf("failed to write to cleanFreeplayGroups.json at the cwd, check your permissions %s", e);
-        }
+        return totalRBE * 1.8;
     }
 }

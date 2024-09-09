@@ -1,56 +1,39 @@
-import org.json.JSONObject;
-
-import java.nio.file.Files;
-import java.nio.file.Path;
-
 public class BloonCalculator {
-    JSONObject rawText;
 
-    public BloonCalculator() {
-        try {
-            String text = Files.readString(Path.of("bloonData.json"));
-            this.rawText = new JSONObject(text);
-        } catch (Exception e) {
-            System.out.printf("failed to read json file with exception %s", e);
-            System.exit(1);
-        }
+    public static int getCash(String bloon, boolean isSuper) {
+        BloonData bloonData = BloonData.BLOONS_DATA_MAP.get(bloon);
+        if (bloonData.isMoab) return bloonData.cash;
+        if (isSuper) return bloonData.superCash;
+        return bloonData.cash;
     }
 
-    public int getCash(String bloon, boolean isSuper) {
-        JSONObject bloonData = rawText.getJSONObject(bloon);
-        if (bloonData.getBoolean("isMoab")) {
-            return bloonData.getInt("cash");
-        }
-        return bloonData.getInt(isSuper ? "superCash" : "cash");
-    }
-
-    public double getCash(String bloon, int round) {
+    public static double getCash(String bloon, int round) {
         return getCash(bloon.replace("Fortified", "").replace("Camo", "").replace("Regrow", ""), round > 80) * getCashMultiplier(round);
     }
 
-    public int getRBE(String bloon, double healthMultiplier, boolean isSuper, boolean isFortified) {
-        JSONObject bloonData = rawText.getJSONObject(bloon);
-        if (bloonData.getBoolean("isMoab")) {
+    public static int getRBE(String bloon, double healthMultiplier, boolean isSuper, boolean isFortified) {
+        BloonData bloonData = BloonData.BLOONS_DATA_MAP.get(bloon);
+        if (bloonData.isMoab) {
             if (isFortified) {
-                return ((int) (bloonData.getInt("sumMoabHealth") * healthMultiplier * 2))
-                        + bloonData.getInt("numCeramics") * rawText.getJSONObject("CeramicFortified").getInt(isSuper ? "superRBE" : "RBE");
+                return ((int) (bloonData.sumMoabHealth * healthMultiplier * 2))
+                        + bloonData.numCeramics * (isSuper ? BloonData.CERAMIC_FORTIFIED.superRBE : BloonData.CERAMIC_FORTIFIED.RBE);
             } else {
-                return ((int) (bloonData.getInt("sumMoabHealth") * healthMultiplier))
-                        + bloonData.getInt("numCeramics") * rawText.getJSONObject("Ceramic").getInt(isSuper ? "superRBE" : "RBE");
+                return ((int) (bloonData.sumMoabHealth * healthMultiplier))
+                        + bloonData.numCeramics * (isSuper ? BloonData.CERAMIC.superRBE : BloonData.CERAMIC.RBE);
             }
         }
         if (isFortified) {
-            bloonData = rawText.getJSONObject(bloon + "Fortified");
+            bloonData = BloonData.BLOONS_DATA_MAP.get(bloon + "Fortified");
         }
-        return bloonData.getInt(isSuper ? "superRBE" : "RBE");
+        return (isSuper ? bloonData.superRBE : bloonData.RBE);
     }
 
 
-    public int getRBE(String bloon, int round) {
+    public static int getRBE(String bloon, int round) {
         return getRBE(bloon.replace("Fortified", "").replace("Camo", "").replace("Regrow", ""), getHealthMultiplier(round), round > 80, bloon.contains("Fortified"));
     }
 
-    public int getRBE(String bloon) {
+    public static int getRBE(String bloon) {
         return getRBE(bloon, 1);
     }
 
