@@ -8,7 +8,10 @@ import java.util.stream.IntStream;
 import org.json.*;
 
 class FreeplayExplorer {
-    // i gregging HATE this oop stuff but 
+    static int SEED = 12;
+    static int START = 300;
+    static int END = 310;
+
     public static void main(String[] args) {
         BloonCalculator bloonCalculator = new BloonCalculator();
         List<JSONObject> freeplayGroups = new ArrayList<>();
@@ -23,10 +26,6 @@ class FreeplayExplorer {
             System.out.printf("failed to read json file with exception %s", e);
             return;
         }
-        List<Integer> arguments = parseArguments(List.of(args));
-        final int SEED = arguments.get(0);
-        final int START = arguments.get(1);
-        final int END = arguments.get(2);
         int ROUND = START;
         long totalRBE = 0;
         double totalCash = 0;
@@ -36,9 +35,9 @@ class FreeplayExplorer {
             SeededRandom random = new SeededRandom(ROUND + SEED);
             float budget;
             if (ROUND > 1) {
-                budget = (float) (CalculateBudget(ROUND) * (1.5 - random.getNext()));
+                budget = (float) (calculateBudget(ROUND) * (1.5 - random.getNext()));
             } else {
-                budget = CalculateBudget(ROUND);
+                budget = calculateBudget(ROUND);
             }
 
             float OGBudget = budget;
@@ -46,7 +45,7 @@ class FreeplayExplorer {
             double roundCash = 0;
             int roundTime = 0;
             List<Integer> testGroups = IntStream.range(0, 529).boxed().collect(Collectors.toList());
-            ShuffleSeeded(testGroups, ROUND + SEED);
+            shuffleSeeded(testGroups, ROUND + SEED);
             System.out.println("+------------------------------------------------------+");
             System.out.printf("| ROUND %46s |\n", ROUND);
             System.out.println("+------------------+-----------------+-----------------+");
@@ -65,7 +64,7 @@ class FreeplayExplorer {
                 if (!inBounds) {
                     continue;
                 }
-                float score = object.getFloat("score") == 0 ? CalculateScore(object, bloonCalculator) : object.getFloat("score");
+                float score = object.getFloat("score") == 0 ? calculateScore(object, bloonCalculator) : object.getFloat("score");
                 if (score > budget) continue;
                 String bloon = object.getJSONObject("group").getString("bloon");
                 int count = object.getJSONObject("group").getInt("count");
@@ -94,33 +93,6 @@ class FreeplayExplorer {
         System.out.println("+------------------------------------------------------+");
     }
 
-    static class SeededRandom {
-        int initialSeed;
-        long currentSeed;
-
-        public SeededRandom(int seed) {
-            this.initialSeed = seed;
-            this.currentSeed = seed;
-        }
-
-        public float getNext() {
-            this.currentSeed = (this.currentSeed * 0x41a7) % 0x7FFFFFFF;
-            return (float) (this.currentSeed * 4.656613e-10);
-        }
-
-        public double getNextDouble() {
-            this.currentSeed = (this.currentSeed * 0x41a7) % 0x7FFFFFFF;
-            return this.currentSeed / 2147483646.0;
-        }
-    }
-
-    public static List<Integer> parseArguments(List<String> args) {
-        if (args.size() != 3) {
-            throw new IllegalArgumentException("arguments must be in the form of {seed}, {startRound}, {endRound}, both inclusive");
-        }
-        return args.stream().map(Integer::parseInt).collect(Collectors.toList());
-    }
-
     public static String formatEmissions(JSONObject emission) {
         JSONObject group = emission.getJSONObject("group");
         return String.format("| %16s |%16s |%16s |",
@@ -130,7 +102,7 @@ class FreeplayExplorer {
         );
     }
 
-    public static <T> void ShuffleSeeded(List<T> lst, int seed) {
+    public static <T> void shuffleSeeded(List<T> lst, int seed) {
         SeededRandom random = new SeededRandom(seed);
         int pointer = lst.size() - 1;
         int listLen = pointer;
@@ -147,7 +119,7 @@ class FreeplayExplorer {
         }
     }
 
-    public static float CalculateBudget(int round) {
+    public static float calculateBudget(int round) {
         if (round > 100) {
             return round * 4000 - 225000;
         }
@@ -159,7 +131,7 @@ class FreeplayExplorer {
         return (float) ((1 + round * 0.01) * (round * -3 + 400) * ((budget * 5e-11 + helper + 20) / 160) * 0.6);
     }
 
-    public static float CalculateScore(JSONObject bloonModel, BloonCalculator calc) {
+    public static float calculateScore(JSONObject bloonModel, BloonCalculator calc) {
         String bloon = bloonModel.getJSONObject("group").getString("bloon");
         int count = bloonModel.getJSONObject("group").getInt("count");
         double multiplier = 1;
@@ -229,7 +201,7 @@ class FreeplayExplorer {
             freeplayGroup.getJSONObject("group").remove("checkedImplementationType");
             freeplayGroup.getJSONObject("group").remove("WasCollected");
             if (freeplayGroup.getInt("score") == 0) {
-                freeplayGroup.put("score", CalculateScore(freeplayGroup, calc));
+                freeplayGroup.put("score", calculateScore(freeplayGroup, calc));
             }
             cleanedJSON.put(freeplayGroup);
         }
@@ -239,88 +211,6 @@ class FreeplayExplorer {
             writer.close();
         } catch (Exception e) {
             System.out.printf("failed to write to cleanFreeplayGroups.json at the cwd, check your permissions %s", e);
-        }
-    }
-
-    public static class BloonCalculator {
-        JSONObject rawText;
-
-        public BloonCalculator() {
-            try {
-                String text = Files.readString(Path.of("bloonData.json"));
-                this.rawText = new JSONObject(text);
-            } catch (Exception e) {
-                System.out.printf("failed to read json file with exception %s", e);
-                System.exit(1);
-            }
-        }
-
-        public int getCash(String bloon, boolean isSuper) {
-            JSONObject bloonData = rawText.getJSONObject(bloon);
-            if (bloonData.getBoolean("isMoab")) {
-                return bloonData.getInt("cash");
-            }
-            return bloonData.getInt(isSuper ? "superCash" : "cash");
-        }
-
-        public double getCash(String bloon, int round) {
-            return getCash(bloon.replace("Fortified", "").replace("Camo", "").replace("Regrow", ""), round > 80) * getCashMultiplier(round);
-        }
-
-        public int getRBE(String bloon, double healthMultiplier, boolean isSuper, boolean isFortified) {
-            JSONObject bloonData = rawText.getJSONObject(bloon);
-            if (bloonData.getBoolean("isMoab")) {
-                if (isFortified) {
-                    return ((int) (bloonData.getInt("sumMoabHealth") * healthMultiplier * 2))
-                            + bloonData.getInt("numCeramics") * rawText.getJSONObject("CeramicFortified").getInt(isSuper ? "superRBE" : "RBE");
-                } else {
-                    return ((int) (bloonData.getInt("sumMoabHealth") * healthMultiplier))
-                            + bloonData.getInt("numCeramics") * rawText.getJSONObject("Ceramic").getInt(isSuper ? "superRBE" : "RBE");
-                }
-            }
-            if (isFortified) {
-                bloonData = rawText.getJSONObject(bloon + "Fortified");
-            }
-            return bloonData.getInt(isSuper ? "superRBE" : "RBE");
-        }
-
-
-        public int getRBE(String bloon, int round) {
-            return getRBE(bloon.replace("Fortified", "").replace("Camo", "").replace("Regrow", ""), getHealthMultiplier(round), round > 80, bloon.contains("Fortified"));
-        }
-
-        public int getRBE(String bloon) {
-            return getRBE(bloon, 1);
-        }
-
-        public static double getHealthMultiplier(int round) {
-            if (round <= 80) return 1;
-            if (round <= 100) return (round - 30) / 50D;
-            if (round <= 124) return (round - 72) / 20D;
-            if (round <= 150) return (3 * round - 320) / 20D;
-            if (round <= 250) return (7 * round - 920) / 20D;
-            if (round <= 300) return round - 208.5;
-            if (round <= 400) return (3 * round - 717) / 2D;
-            if (round <= 500) return (5 * round - 1517) / 2D;
-            return 5 * round - 2008.5;
-        }
-
-        public static double getSpeedMultiplier(int round) {
-            if (round <= 80) return 1;
-            if (round <= 100) return 1 + (round - 80) * 0.02;
-            if (round <= 150) return 1.6 + (round - 101) * 0.02;
-            if (round <= 200) return 3 + (round - 151) * 0.02;
-            if (round <= 250) return 4.5 + (round - 201) * 0.02;
-            return 6 + (round - 252) * 0.02;
-        }
-
-        public static double getCashMultiplier(int round) {
-            if (round <= 50) return 1;
-            if (round <= 60) return 0.5;
-            if (round <= 85) return 0.2;
-            if (round <= 100) return 0.1;
-            if (round <= 120) return 0.05;
-            return 0.02;
         }
     }
 }
