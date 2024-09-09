@@ -1,6 +1,7 @@
 import java.io.FileReader;
 import java.lang.reflect.Type;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -8,55 +9,40 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 class FreeplayExplorer {
-    static int SEED = 12;
-    static int START = 300;
-    static int END = 310;
 
-    public static List<FreeplayGroup> parseFreeplayGroup(String filePath) {
+    static List<FreeplayGroup> freeplayGroups;
+    static {
         Gson gson = new Gson();
         Type freeplayGroupListType = new TypeToken<List<FreeplayGroup>>() {}.getType();
 
-        try (FileReader reader = new FileReader(filePath)) {
-            return gson.fromJson(reader, freeplayGroupListType);
+        try (FileReader reader = new FileReader("cleanedFreeplayGroups.json")) {
+            freeplayGroups = gson.fromJson(reader, freeplayGroupListType);
         } catch (Exception e) {
             System.out.println(e);
-            return new ArrayList<>();
         }
     }
 
-    public static void main(String[] args) {
-        List<FreeplayGroup> freeplayGroups = parseFreeplayGroup("cleanedFreeplayGroups.json");
-
-        int ROUND = START;
-        long totalRBE = 0;
-        double totalCash = 0;
-        int totalTime = 0;
-
-        while (ROUND <= END) {
-            SeededRandom random = new SeededRandom(ROUND + SEED);
+    public static boolean hasFBads(int seed, int startRound, int endRound) {
+        for (int round = startRound; round < endRound; ++round) {
+            SeededRandom random = new SeededRandom(round + seed);
             float budget;
-            if (ROUND > 1) {
-                budget = (float) (calculateBudget(ROUND) * (1.5 - random.getNext()));
+            if (round > 1) {
+                budget = (float) (calculateBudget(round) * (1.5 - random.getNext()));
             } else {
-                budget = calculateBudget(ROUND);
+                budget = calculateBudget(round);
             }
 
-            float OGBudget = budget;
-            long roundRBE = 0;
-            double roundCash = 0;
-            int roundTime = 0;
             List<Integer> testGroups = IntStream.range(0, 529).boxed().collect(Collectors.toList());
-            shuffleSeeded(testGroups, ROUND + SEED);
-            System.out.println("+------------------------------------------------------+");
-            System.out.printf("| ROUND %46s |\n", ROUND);
-            System.out.println("+------------------+-----------------+-----------------+");
-            System.out.println("|            Bloon |           Count |          Length |");
-            System.out.println("+------------------+-----------------+-----------------+");
+            shuffleSeeded(testGroups, round + seed);
+
+
             for (int index : testGroups) {
                 FreeplayGroup freeplayGroup = freeplayGroups.get(index);
+
+                if (freeplayGroup.score > budget) continue;
                 boolean inBounds = false;
                 for (FreeplayGroup.Bounds bounds : freeplayGroup.bounds) {
-                    if (bounds.lowerBounds <= ROUND && ROUND <= bounds.upperBounds) {
+                    if (bounds.lowerBounds <= round && round <= bounds.upperBounds) {
                         inBounds = true;
                         break;
                     }
@@ -64,42 +50,53 @@ class FreeplayExplorer {
                 if (!inBounds) {
                     continue;
                 }
-                if (freeplayGroup.score == 0) freeplayGroup.score = calculateScore(freeplayGroup);
-                float score = (float)freeplayGroup.score;
-                if (score > budget) continue;
-                String bloon = freeplayGroup.group.bloon;
-                int count = freeplayGroup.group.count;
-                roundRBE += (long) BloonCalculator.getRBE(bloon, ROUND) * count;
-                roundCash += BloonCalculator.getCash(bloon, ROUND) * count;
-                roundTime += (int) freeplayGroup.group.end;
-                System.out.println(formatEmissions(freeplayGroup));
-                budget -= score;
+
+                if (freeplayGroup.group.bloon.equals("BadFortified")) {
+                    return true;
+                }
+                budget -= (float) freeplayGroup.score;
             }
-            System.out.println("+------------------------------------------------------+");
-            System.out.printf("| %52s |\n", String.format("Score budget: %,.2f/%,.2f", OGBudget - budget, OGBudget));
-            System.out.printf("| %52s |\n", String.format("Round RBE: %,d", roundRBE));
-            System.out.printf("| %52s |\n", String.format("Round Cash: %,.2f", roundCash));
-            System.out.printf("| %52s |\n", String.format("Round Length: %,d", roundTime));
-            System.out.printf("| %52s |\n", String.format("Health Multiplier: %s", BloonCalculator.getHealthMultiplier(ROUND)));
-            System.out.printf("| %52s |\n", String.format("Speed Multiplier: %s", BloonCalculator.getSpeedMultiplier(ROUND)));
-            ROUND++;
-            totalCash += roundCash;
-            totalRBE += roundRBE;
-            totalTime += roundTime;
+            ++round;
         }
-        System.out.println("+------------------------TOTAL-------------------------+");
-        System.out.printf("| %52s |\n", String.format("Total RBE: %,d", totalRBE));
-        System.out.printf("| %52s |\n", String.format("Total Cash: %,.2f", totalCash));
-        System.out.printf("| %52s |\n", String.format("Total Time: %,d", totalTime));
-        System.out.println("+------------------------------------------------------+");
+        return false;
     }
 
-    public static String formatEmissions(FreeplayGroup freeplayGroup) {
-        return String.format("| %16s |%16s |%16s |",
-                freeplayGroup.group.bloon,
-                freeplayGroup.group.count,
-                freeplayGroup.group.end
-        );
+    public static void processSeedRange(int startSeed, int endSeed, int startRound, int endRound) {
+        for (int seed = startSeed; seed < endSeed; ++seed) {
+            if (!hasFBads(seed, startRound, endRound)) {
+                System.out.println("Seed with no BadFortified: " + seed);
+            }
+        }
+    }
+
+    private static final int THREAD_COUNT = 100;  // Adjust thread count based on available cores
+    public static void main(String[] args) {
+        final int totalSeeds = 1000000;
+        final int seedsPerThread = 1000;
+        final int startRound = 201;
+        final int endRound = 250;
+
+        ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
+
+        // Submit tasks to executor service
+        List<Future<?>> futures = new ArrayList<>();
+        for (int seed = 1; seed < totalSeeds; seed += seedsPerThread) {
+            int startSeed = seed;
+            int endSeed = Math.min(seed + seedsPerThread, totalSeeds);
+            futures.add(executor.submit(() -> processSeedRange(startSeed, endSeed, startRound, endRound)));
+        }
+
+        // Wait for all tasks to complete
+        for (Future<?> future : futures) {
+            try {
+                future.get();  // Wait for each task to finish
+            } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // Shutdown executor service
+        executor.shutdown();
     }
 
     public static <T> void shuffleSeeded(List<T> lst, int seed) {
@@ -129,28 +126,5 @@ class FreeplayExplorer {
             return (float) (budget * 5e-11 + helper + 20);
         }
         return (float) ((1 + round * 0.01) * (round * -3 + 400) * ((budget * 5e-11 + helper + 20) / 160) * 0.6);
-    }
-
-    public static double calculateScore(FreeplayGroup freeplayGroup) {
-        String bloon = freeplayGroup.group.bloon;
-        int count = freeplayGroup.group.count;
-        double multiplier = 1;
-        if (bloon.contains("Camo")) {
-            multiplier += 0.1;
-            bloon = bloon.replace("Camo", "");
-        }
-        if (bloon.contains("Regrow")) {
-            multiplier += 0.1;
-            bloon = bloon.replace("Regrow", "");
-        }
-        int bloonRBE = BloonCalculator.getRBE(bloon);
-        if (count == 1) return (float) (bloonRBE * multiplier);
-        double spacing = freeplayGroup.group.end / (60 * count);
-        double totalRBE = count * bloonRBE * multiplier;
-        if (spacing >= 1) return (float) (totalRBE * 0.8);
-        if (spacing >= 0.5) return (float) (totalRBE);
-        if (spacing > 0.1) return (float) (totalRBE * 1.1);
-        if (spacing > 0.08) return (float) (totalRBE * 1.4);
-        return totalRBE * 1.8;
     }
 }
